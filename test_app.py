@@ -25,7 +25,7 @@ with mock_aws():
 
     ok("dashboard is public", c.get("/dashboard").status_code == 200)
     ok("root redirects to dashboard", c.get("/").status_code == 302)
-    ok("login redirects to dashboard", c.get("/login").status_code == 302)
+    ok("login route is absent", c.get("/login").status_code == 404)
 
     page = c.get("/dashboard")
     t = tok(page.text)

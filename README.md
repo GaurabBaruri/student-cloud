@@ -1,12 +1,12 @@
 # Cloud-Based Student Document Management System (AWS EC2 + S3)
 
-Flask web app where students log in and upload, view, download and delete academic documents.
+Flask web app for uploading, viewing, downloading and deleting academic documents without any login flow.
 Files are stored in a **private Amazon S3 bucket**; the app runs on **EC2**; EC2 reaches S3 through an
-**IAM instance role** (no access keys in code). SQLite stores users and document metadata.
+**IAM instance role** (no access keys in code). SQLite stores document metadata.
 
 ## Features
-Login/logout · dashboard · upload (PDF, PNG, JPG, DOCX, no per-file limit enforced by the app) · view · download · delete ·
-file details (name, size, date) · per-user isolation · CSRF protection · magic-byte content validation ·
+Dashboard · upload (PDF, PNG, JPG, DOCX, no per-file limit enforced by the app) · view · download · delete ·
+file details (name, size, date) · public access · CSRF protection · magic-byte content validation ·
 S3 server-side encryption · short-lived pre-signed URLs.
 
 ## Architecture
@@ -28,7 +28,6 @@ export S3_BUCKET="student-document-cloud-2026"
 export AWS_REGION="ap-south-1"
 export FLASK_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")
 
-python scripts/create_user.py      # create first student account
 python app.py                      # http://YOUR_EC2_PUBLIC_IP:5000
 ```
 For anything beyond a demo: `gunicorn -w 2 -b 0.0.0.0:8000 app:app` behind Nginx with HTTPS, then set `SESSION_COOKIE_SECURE=1`.
@@ -40,10 +39,10 @@ python test_app.py
 ```
 
 ## Demo checklist
-Login → upload PDF → open S3 console and show the object → download → delete (gone from dashboard and S3) → logout.
+Upload PDF → open S3 console and show the object → download → delete (gone from dashboard and S3).
 
 ## Limitations / future scope
-Single-user registration is via CLI; no malware scanning; SQLite is not for scale (→ Amazon RDS).
+No login or user registration; no malware scanning; SQLite is not for scale (→ Amazon RDS).
 Future: admin/teacher dashboards, folders, CloudFront, email notifications, access history.
 
 > Cost warning: terminate the EC2 instance and delete unused resources when finished.
