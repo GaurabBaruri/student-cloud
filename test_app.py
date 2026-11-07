@@ -38,9 +38,23 @@ with mock_aws():
     )
     ok("public upload pdf listed", "cert.pdf" in r.text)
 
+    r = c.post(
+        "/upload",
+        data={
+            "file": [
+                (io.BytesIO(b"%PDF-1.4 second file"), "one.pdf"),
+                (io.BytesIO(b"%PDF-1.4 third file"), "two.pdf"),
+            ],
+            "_csrf": t,
+        },
+        content_type="multipart/form-data",
+        follow_redirects=True,
+    )
+    ok("multiple files uploaded", "one.pdf" in r.text and "two.pdf" in r.text)
+
     s3 = boto3.client("s3", region_name="ap-south-1")
     keys = [o["Key"] for o in s3.list_objects_v2(Bucket="test-bucket")["Contents"]]
-    ok("file exists in S3", len(keys) == 1)
+    ok("file exists in S3", len(keys) >= 3)
     ok("served file stored with SSE", s3.head_object(Bucket="test-bucket", Key=keys[0]).get("ServerSideEncryption") == "AES256")
 
     r = c.post(
@@ -73,8 +87,11 @@ with mock_aws():
 
     r = c.post("/delete/1", data={"_csrf": t}, follow_redirects=True)
     ok("delete removes from list", "cert.pdf" not in r.text or "Deleted" in r.text)
-    r2 = c.post("/delete/2", data={"_csrf": t}, follow_redirects=True)
+    r2 = c.post("/delete/4", data={"_csrf": t}, follow_redirects=True)
     ok("delete removes large upload", "big.pdf" not in r2.text or "Deleted" in r2.text)
-    ok("delete removes from S3", "Contents" not in s3.list_objects_v2(Bucket="test-bucket"))
+    r3 = c.post("/delete/2", data={"_csrf": t}, follow_redirects=True)
+    r4 = c.post("/delete/3", data={"_csrf": t}, follow_redirects=True)
+    ok("delete removes all uploaded files", ("one.pdf" not in r3.text and "two.pdf" not in r4.text) or "Deleted" in r3.text or "Deleted" in r4.text)
+    ok("delete removes from S3", s3.list_objects_v2(Bucket="test-bucket").get("Contents") is None)
 
 print("ALL TESTS PASSED")

@@ -396,7 +396,7 @@
             <form action="/upload" method="POST" enctype="multipart/form-data" class="upload-form">
                 <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
                 <div class="file-input-wrap">
-                    <input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,.docx" required>
+                    <input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple required>
                 </div>
                 <button type="submit" class="btn btn-primary">Upload to Cloud</button>
             </form>

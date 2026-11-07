@@ -308,8 +308,6 @@ def get_document(doc_id):
     con = db()
     row = con.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
     con.close()
-    if row is None:
-        abort(404)
     return row
 
 
@@ -578,6 +576,7 @@ def logout():
 
 @app.route("/dashboard")
 def dashboard():
+    purge_missing_documents()
     con = db()
     files = con.execute("SELECT * FROM documents ORDER BY id DESC").fetchall()
     con.close()
@@ -586,48 +585,73 @@ def dashboard():
 
 @app.route("/upload", methods=["POST"])
 def upload():
-    file = request.files.get("file")
-    if not file or not file.filename:
+    uploaded_files = request.files.getlist("file")
+    if not uploaded_files or all((not file or not file.filename) for file in uploaded_files):
         flash("No file selected.")
-        return redirect(url_for("dashboard"))
-
-    try:
-        data = file.read()
-    except Exception:
-        flash("Unable to read the uploaded file.")
-        return redirect(url_for("dashboard"))
-
-    if not data:
-        flash("No file selected.")
-        return redirect(url_for("dashboard"))
-
-    original = secure_filename(file.filename)
-    ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
-    if ext not in ALLOWED:
-        flash("Only PDF, PNG, JPG and DOCX files are allowed.")
-        return redirect(url_for("dashboard"))
-
-    if not content_matches(ext, data[:8]):
-        flash("File content does not match its extension.")
         return redirect(url_for("dashboard"))
 
     user_id = current_user_id()
-    key, _ = _upload_to_storage(user_id, original, data, ext)
-    con = db()
-    con.execute(
-        "INSERT INTO documents (user_id, filename, s3_key, size, upload_date)"
-        " VALUES (?, ?, ?, ?, ?)",
-        (
-            user_id,
-            original,
-            key,
-            len(data),
-            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
-        ),
-    )
-    con.commit()
-    con.close()
-    flash(f"Uploaded {original} to the cloud.")
+    uploaded = []
+    rejected = []
+    rejection_messages = []
+
+    for file in uploaded_files:
+        if not file or not file.filename:
+            continue
+        try:
+            data = file.read()
+        except Exception:
+            rejected.append(file.filename or "Unnamed file")
+            rejection_messages.append("Unable to read the uploaded file.")
+            continue
+
+        if not data:
+            rejected.append(file.filename or "Unnamed file")
+            rejection_messages.append("No file selected.")
+            continue
+
+        original = secure_filename(file.filename)
+        ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
+        if ext not in ALLOWED:
+            rejected.append(original)
+            rejection_messages.append("Only PDF, PNG, JPG and DOCX files are allowed.")
+            continue
+
+        if not content_matches(ext, data[:8]):
+            rejected.append(original)
+            rejection_messages.append("File content does not match its extension.")
+            continue
+
+        key, _ = _upload_to_storage(user_id, original, data, ext)
+        con = db()
+        con.execute(
+            "INSERT INTO documents (user_id, filename, s3_key, size, upload_date)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (
+                user_id,
+                original,
+                key,
+                len(data),
+                datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+            ),
+        )
+        con.commit()
+        con.close()
+        uploaded.append(original)
+
+    if uploaded and len(uploaded) == 1:
+        flash(f"Uploaded {uploaded[0]} to the cloud.")
+    elif uploaded:
+        flash(f"Uploaded {len(uploaded)} files to the cloud: {', '.join(uploaded)}")
+
+    if rejected:
+        if not uploaded and len(rejection_messages) == 1:
+            flash(rejection_messages[0])
+        elif len(rejection_messages) == 1:
+            flash(rejection_messages[0])
+        else:
+            flash("Some files were skipped because they were empty, invalid, or not supported: " + ", ".join(rejected))
+
     return redirect(url_for("dashboard"))
 
 
@@ -657,8 +681,44 @@ def _local_file_path(doc):
 def _serve_local(doc, disposition):
     local_path = _local_file_path(doc)
     if not os.path.exists(local_path):
-        abort(404)
+        raise FileNotFoundError(doc["filename"])
     return send_file(local_path, as_attachment=disposition == "attachment", download_name=doc["filename"])
+
+
+def _is_local_document(doc):
+    key = doc["s3_key"] if doc else ""
+    if not key:
+        return False
+    if os.path.isabs(key):
+        return True
+    if key.startswith(LOCAL_UPLOAD_DIR):
+        return True
+    return os.path.exists(_local_file_path(doc))
+
+
+def _document_missing(doc):
+    if doc is None:
+        return True
+    if _is_local_document(doc):
+        return not os.path.exists(_local_file_path(doc))
+    if BUCKET and REGION:
+        try:
+            s3.head_object(Bucket=BUCKET, Key=doc["s3_key"])
+            return False
+        except Exception:
+            return True
+    return True
+
+
+def purge_missing_documents():
+    con = db()
+    rows = con.execute("SELECT * FROM documents ORDER BY id DESC").fetchall()
+    missing_ids = [row["id"] for row in rows if _document_missing(row)]
+    if missing_ids:
+        placeholders = ", ".join("?" for _ in missing_ids)
+        con.execute(f"DELETE FROM documents WHERE id IN ({placeholders})", tuple(missing_ids))
+        con.commit()
+    con.close()
 
 
 def _upload_to_storage(user_id, original, data, ext):
@@ -688,22 +748,39 @@ def _upload_to_storage(user_id, original, data, ext):
 @app.route("/view/<int:doc_id>")
 def view(doc_id):
     doc = get_document(doc_id)
-    if doc["s3_key"].startswith(LOCAL_UPLOAD_DIR) or os.path.exists(_local_file_path(doc)):
-        return _serve_local(doc, "inline")
+    if doc is None or _document_missing(doc):
+        flash("The requested document was not found or is no longer available.")
+        return redirect(url_for("dashboard"))
+    if _is_local_document(doc):
+        try:
+            return _serve_local(doc, "inline")
+        except FileNotFoundError:
+            flash("The requested document was not found or is no longer available.")
+            return redirect(url_for("dashboard"))
     return redirect(_presigned(doc, "inline"))
 
 
 @app.route("/download/<int:doc_id>")
 def download(doc_id):
     doc = get_document(doc_id)
-    if doc["s3_key"].startswith(LOCAL_UPLOAD_DIR) or os.path.exists(_local_file_path(doc)):
-        return _serve_local(doc, "attachment")
+    if doc is None or _document_missing(doc):
+        flash("The requested document was not found or is no longer available.")
+        return redirect(url_for("dashboard"))
+    if _is_local_document(doc):
+        try:
+            return _serve_local(doc, "attachment")
+        except FileNotFoundError:
+            flash("The requested document was not found or is no longer available.")
+            return redirect(url_for("dashboard"))
     return redirect(_presigned(doc, "attachment"))
 
 
 @app.route("/delete/<int:doc_id>", methods=["POST"])
 def delete(doc_id):
     doc = get_document(doc_id)
+    if doc is None:
+        flash("The document is already missing.")
+        return redirect(url_for("dashboard"))
     if doc["s3_key"].startswith(LOCAL_UPLOAD_DIR) or os.path.exists(_local_file_path(doc)):
         try:
             os.remove(_local_file_path(doc))
