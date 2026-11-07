@@ -20,32 +20,12 @@
             <button class="btn btn-primary w-100">Login</button>
         </form>
 
-        <hr class="my-4">
-
-        <h5 class="mb-3">Set password with OTP</h5>
-        <form method="POST" action="{{ url_for('request_otp') }}">
-            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-            <input class="form-control mb-3" name="username" placeholder="Username" required>
-            <select class="form-select mb-3" name="contact_type">
-                <option value="email">Email</option>
-                <option value="phone">Phone Number</option>
-            </select>
-            <input class="form-control mb-3" name="contact_value" placeholder="your@email.com or +1234567890" required>
-            <button class="btn btn-outline-secondary w-100">Send OTP</button>
-        </form>
-
-        <form method="POST" action="{{ url_for('set_password') }}" class="mt-3">
-            <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
-            <input class="form-control mb-3" name="username" placeholder="Username" required>
-            <select class="form-select mb-3" name="contact_type">
-                <option value="email">Email</option>
-                <option value="phone">Phone Number</option>
-            </select>
-            <input class="form-control mb-3" name="contact_value" placeholder="Email or phone used above" required>
-            <input class="form-control mb-3" name="otp" placeholder="Enter OTP" required>
-            <input class="form-control mb-3" type="password" name="password" placeholder="New password" required>
-            <button class="btn btn-success w-100">Set Password & Login</button>
-        </form>
+        <div class="mt-3 text-center">
+            <a href="{{ url_for('signup') }}" class="text-decoration-none">Create account</a>
+        </div>
+        <div class="mt-2 text-center">
+            <a href="{{ url_for('forgot_password') }}" class="text-decoration-none">Forgot password?</a>
+        </div>
     </div>
 </div>
 </body>

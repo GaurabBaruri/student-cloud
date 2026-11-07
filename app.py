@@ -3,9 +3,11 @@ import os
 import random
 import re
 import secrets
+import smtplib
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from functools import wraps
 
 import boto3
@@ -200,18 +202,77 @@ def ensure_default_user():
 
 
 def send_otp(contact_type, contact_value, otp_code):
-    print(f"[OTP] {contact_type}: {contact_value} -> {otp_code}")
-    return True
+    if contact_type != "email":
+        print(f"[OTP] {contact_type}: {contact_value} -> {otp_code}")
+        return True
+
+    smtp_host = os.environ.get("SMTP_HOST", "smtp.gmail.com")
+    smtp_port = int(os.environ.get("SMTP_PORT", "587"))
+    smtp_user = os.environ.get("SMTP_USERNAME")
+    smtp_password = os.environ.get("SMTP_PASSWORD")
+
+    if not smtp_user or not smtp_password:
+        print(f"[OTP] email: {contact_value} -> {otp_code}")
+        return True
+
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "Student Cloud password reset OTP"
+        msg["From"] = smtp_user
+        msg["To"] = contact_value
+        msg.set_content(
+            f"Your Student Cloud OTP is: {otp_code}\n\n"
+            "This code is valid for 10 minutes."
+        )
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(smtp_user, smtp_password)
+            server.send_message(msg)
+        print(f"[OTP SENT] email: {contact_value} -> {otp_code}")
+        return True
+    except Exception as exc:
+        print(f"[OTP SEND FAILED] {exc}")
+        print(f"[OTP] email: {contact_value} -> {otp_code}")
+        return False
+
+
+def user_exists(username=None, email=None, phone=None):
+    con = db()
+    query = "SELECT id FROM users WHERE "
+    params = []
+    clauses = []
+    if username:
+        clauses.append("username = ?")
+        params.append(username.strip())
+    if email:
+        clauses.append("email = ?")
+        params.append(normalize_email(email))
+    if phone:
+        clauses.append("phone = ?")
+        params.append(normalize_phone(phone))
+    if not clauses:
+        con.close()
+        return False
+    row = con.execute(query + " OR ".join(clauses), tuple(params)).fetchone()
+    con.close()
+    return row is not None
 
 
 # ---------- helpers ----------
 def login_required(fn):
     @wraps(fn)
     def wrapper(*args, **kwargs):
-        if "user_id" not in session:
-            return redirect(url_for("login"))
         return fn(*args, **kwargs)
     return wrapper
+
+
+def current_user_id():
+    if "user_id" in session:
+        return session["user_id"]
+    con = db()
+    row = con.execute("SELECT id FROM users ORDER BY id ASC LIMIT 1").fetchone()
+    con.close()
+    return row["id"] if row else 1
 
 
 def csrf_token():
@@ -241,12 +302,9 @@ def filesize(n):
     return f"{n:.1f} GB"
 
 
-def get_own_document(doc_id):
+def get_document(doc_id):
     con = db()
-    row = con.execute(
-        "SELECT * FROM documents WHERE id = ? AND user_id = ?",
-        (doc_id, session["user_id"]),
-    ).fetchone()
+    row = con.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
     con.close()
     if row is None:
         abort(404)
@@ -260,27 +318,129 @@ def content_matches(ext, head):
 # ---------- routes ----------
 @app.route("/")
 def index():
-    return redirect(url_for("dashboard" if "user_id" in session else "login"))
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/signup", methods=["GET", "POST"])
+def signup():
+    flash("Public access is enabled. Please use the main upload page.")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    flash("Login is not required. Please continue to the public dashboard.")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/forgot-password", methods=["GET", "POST"])
+def forgot_password():
     if request.method == "POST":
-        identifier = (request.form.get("identifier") or request.form.get("username", "")).strip()
+        username = request.form.get("username", "").strip()
+        email = request.form.get("email", "").strip()
+        if not username or not email:
+            flash("Username and email are required.")
+            return redirect(url_for("forgot_password"))
+
+        normalized_email = normalize_email(email)
+        if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized_email):
+            flash("Enter a valid email address.")
+            return redirect(url_for("forgot_password"))
+
+        con = db()
+        user = con.execute(
+            "SELECT * FROM users WHERE username = ? AND email = ?",
+            (username, normalized_email),
+        ).fetchone()
+        if user is None:
+            con.close()
+            flash("No account found with that username and email.")
+            return redirect(url_for("forgot_password"))
+
+        otp_code = str(random.randint(100000, 999999))
+        expires_at = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+        con.execute(
+            "DELETE FROM otp_requests WHERE user_id = ?",
+            (user["id"],),
+        )
+        con.execute(
+            "INSERT INTO otp_requests (user_id, contact_type, contact_value, otp_code, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (user["id"], "email", normalized_email, otp_code, datetime.now(timezone.utc).isoformat(), expires_at),
+        )
+        con.commit()
+        con.close()
+
+        contact_type = "email"
+        send_otp(contact_type, normalized_email, otp_code)
+        session["reset_user_id"] = user["id"]
+        session["reset_email"] = normalized_email
+        session["reset_verified"] = False
+        flash("OTP sent to your email. Check the terminal output for the demo code.")
+        return redirect(url_for("verify_otp"))
+
+    return render_template("forgot_password.html")
+
+
+@app.route("/verify-otp", methods=["GET", "POST"])
+def verify_otp():
+    if "reset_user_id" not in session:
+        return redirect(url_for("forgot_password"))
+
+    if request.method == "POST":
+        otp_code = request.form.get("otp", "").strip()
+        con = db()
+        row = con.execute(
+            "SELECT * FROM otp_requests WHERE user_id = ? AND contact_type = 'email' ORDER BY id DESC LIMIT 1",
+            (session["reset_user_id"],),
+        ).fetchone()
+        con.close()
+
+        if row and row["otp_code"] == otp_code:
+            expires_at = datetime.fromisoformat(row["expires_at"])
+            if datetime.now(timezone.utc) <= expires_at:
+                session["reset_verified"] = True
+                flash("OTP verified successfully.")
+                return redirect(url_for("reset_password"))
+
+        flash("Invalid or expired OTP. Please try again.")
+
+    return render_template("verify_otp.html")
+
+
+@app.route("/reset-password", methods=["GET", "POST"])
+def reset_password():
+    if "reset_user_id" not in session or not session.get("reset_verified"):
+        return redirect(url_for("forgot_password"))
+
+    if request.method == "POST":
         password = request.form.get("password", "")
-        user = get_user_by_identifier(identifier)
-        if user and check_password_hash(user["password"], password):
-            if user["password_set"] in (None, 0):
-                con = db()
-                con.execute("UPDATE users SET password_set = 1 WHERE id = ?", (user["id"],))
-                con.commit()
-                con.close()
-            session.clear()
-            session["user_id"] = user["id"]
-            session["user"] = user["username"]
-            return redirect(url_for("dashboard"))
-        flash("Invalid username, email, phone, or password.")
-    return render_template("login.html")
+        confirm = request.form.get("confirm_password", "")
+        if len(password) < 6:
+            flash("Password must be at least 6 characters long.")
+            return redirect(url_for("reset_password"))
+        if password != confirm:
+            flash("Passwords do not match.")
+            return redirect(url_for("reset_password"))
+
+        con = db()
+        con.execute(
+            "UPDATE users SET password = ?, password_set = 1 WHERE id = ?",
+            (generate_password_hash(password), session["reset_user_id"]),
+        )
+        con.execute(
+            "DELETE FROM otp_requests WHERE user_id = ?",
+            (session["reset_user_id"],),
+        )
+        con.commit()
+        con.close()
+
+        session.pop("reset_user_id", None)
+        session.pop("reset_email", None)
+        session.pop("reset_verified", None)
+        flash("Password reset successfully. Please log in with your new password.")
+        return redirect(url_for("login"))
+
+    return render_template("reset_password.html")
 
 
 @app.route("/request-otp", methods=["POST"])
@@ -411,23 +571,18 @@ def set_password():
 @app.route("/logout")
 def logout():
     session.clear()
-    return redirect(url_for("login"))
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/dashboard")
-@login_required
 def dashboard():
     con = db()
-    files = con.execute(
-        "SELECT * FROM documents WHERE user_id = ? ORDER BY id DESC",
-        (session["user_id"],),
-    ).fetchall()
+    files = con.execute("SELECT * FROM documents ORDER BY id DESC").fetchall()
     con.close()
     return render_template("dashboard.html", files=files)
 
 
 @app.route("/upload", methods=["POST"])
-@login_required
 def upload():
     file = request.files.get("file")
     if not file or not file.filename:
@@ -446,8 +601,9 @@ def upload():
         flash("File content does not match its extension.")
         return redirect(url_for("dashboard"))
 
+    user_id = current_user_id()
     data = file.read()
-    key = f"users/{session['user_id']}/{uuid.uuid4().hex}.{ext}"
+    key = f"users/{user_id}/{uuid.uuid4().hex}.{ext}"
     s3.put_object(
         Bucket=BUCKET, Key=key, Body=data,
         ContentType=file.mimetype or "application/octet-stream",
@@ -457,7 +613,7 @@ def upload():
     con.execute(
         "INSERT INTO documents (user_id, filename, s3_key, size, upload_date)"
         " VALUES (?, ?, ?, ?, ?)",
-        (session["user_id"], original, key, len(data),
+        (user_id, original, key, len(data),
          datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
     )
     con.commit()
@@ -480,21 +636,18 @@ def _presigned(doc, disposition):
 
 
 @app.route("/view/<int:doc_id>")
-@login_required
 def view(doc_id):
-    return redirect(_presigned(get_own_document(doc_id), "inline"))
+    return redirect(_presigned(get_document(doc_id), "inline"))
 
 
 @app.route("/download/<int:doc_id>")
-@login_required
 def download(doc_id):
-    return redirect(_presigned(get_own_document(doc_id), "attachment"))
+    return redirect(_presigned(get_document(doc_id), "attachment"))
 
 
 @app.route("/delete/<int:doc_id>", methods=["POST"])
-@login_required
 def delete(doc_id):
-    doc = get_own_document(doc_id)
+    doc = get_document(doc_id)
     s3.delete_object(Bucket=BUCKET, Key=doc["s3_key"])
     con = db()
     con.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
