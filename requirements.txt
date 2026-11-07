@@ -1,3 +1,4 @@
 Flask>=3.0,<4
 boto3>=1.34
 gunicorn>=22.0
+moto[aws]>=5.0,<6
