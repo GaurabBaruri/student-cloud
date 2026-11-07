@@ -5,7 +5,7 @@ Files are stored in a **private Amazon S3 bucket**; the app runs on **EC2**; EC2
 **IAM instance role** (no access keys in code). SQLite stores users and document metadata.
 
 ## Features
-Login/logout · dashboard · upload (PDF, PNG, JPG, DOCX, max 5 MB) · view · download · delete ·
+Login/logout · dashboard · upload (PDF, PNG, JPG, DOCX, no per-file limit enforced by the app) · view · download · delete ·
 file details (name, size, date) · per-user isolation · CSRF protection · magic-byte content validation ·
 S3 server-side encryption · short-lived pre-signed URLs.
 

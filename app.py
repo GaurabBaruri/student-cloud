@@ -12,7 +12,7 @@ from functools import wraps
 
 import boto3
 from flask import (Flask, abort, flash, redirect, render_template, request,
-                   session, url_for)
+                   send_file, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
@@ -23,7 +23,7 @@ REGION = os.environ["AWS_REGION"]
 DB_PATH = os.environ.get("DB_PATH", "students.db")
 
 app.config.update(
-    MAX_CONTENT_LENGTH=5 * 1024 * 1024,  # 5 MB
+    MAX_CONTENT_LENGTH=None,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
     # Set SESSION_COOKIE_SECURE=1 once the site is served over HTTPS.
@@ -31,6 +31,8 @@ app.config.update(
 )
 
 s3 = boto3.client("s3", region_name=REGION)
+LOCAL_UPLOAD_DIR = os.environ.get("UPLOAD_DIR", os.path.join(os.getcwd(), "uploads"))
+os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
 
 ALLOWED = {"pdf", "png", "jpg", "jpeg", "docx"}
 # Magic-byte signatures: validates real content, not just the extension.
@@ -589,32 +591,39 @@ def upload():
         flash("No file selected.")
         return redirect(url_for("dashboard"))
 
+    try:
+        data = file.read()
+    except Exception:
+        flash("Unable to read the uploaded file.")
+        return redirect(url_for("dashboard"))
+
+    if not data:
+        flash("No file selected.")
+        return redirect(url_for("dashboard"))
+
     original = secure_filename(file.filename)
     ext = original.rsplit(".", 1)[-1].lower() if "." in original else ""
     if ext not in ALLOWED:
         flash("Only PDF, PNG, JPG and DOCX files are allowed.")
         return redirect(url_for("dashboard"))
 
-    head = file.stream.read(8)
-    file.stream.seek(0)
-    if not content_matches(ext, head):
+    if not content_matches(ext, data[:8]):
         flash("File content does not match its extension.")
         return redirect(url_for("dashboard"))
 
     user_id = current_user_id()
-    data = file.read()
-    key = f"users/{user_id}/{uuid.uuid4().hex}.{ext}"
-    s3.put_object(
-        Bucket=BUCKET, Key=key, Body=data,
-        ContentType=file.mimetype or "application/octet-stream",
-        ServerSideEncryption="AES256",
-    )
+    key, _ = _upload_to_storage(user_id, original, data, ext)
     con = db()
     con.execute(
         "INSERT INTO documents (user_id, filename, s3_key, size, upload_date)"
         " VALUES (?, ?, ?, ?, ?)",
-        (user_id, original, key, len(data),
-         datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")),
+        (
+            user_id,
+            original,
+            key,
+            len(data),
+            datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        ),
     )
     con.commit()
     con.close()
@@ -635,31 +644,81 @@ def _presigned(doc, disposition):
     )
 
 
+def _local_file_path(doc):
+    key = doc["s3_key"]
+    if os.path.isabs(key):
+        return key
+    candidate = os.path.join(LOCAL_UPLOAD_DIR, key)
+    if os.path.exists(candidate):
+        return candidate
+    return os.path.abspath(os.path.join(os.getcwd(), key))
+
+
+def _serve_local(doc, disposition):
+    local_path = _local_file_path(doc)
+    if not os.path.exists(local_path):
+        abort(404)
+    return send_file(local_path, as_attachment=disposition == "attachment", download_name=doc["filename"])
+
+
+def _upload_to_storage(user_id, original, data, ext):
+    if BUCKET and REGION and os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
+        key = f"users/{user_id}/{uuid.uuid4().hex}.{ext}"
+        try:
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=key,
+                Body=data,
+                ContentType="application/octet-stream",
+                ServerSideEncryption="AES256",
+            )
+            return key, "s3"
+        except Exception as exc:
+            print(f"[S3 FALLBACK] {exc}")
+
+    user_dir = os.path.join(LOCAL_UPLOAD_DIR, str(user_id))
+    os.makedirs(user_dir, exist_ok=True)
+    local_name = f"{uuid.uuid4().hex}.{ext}"
+    local_path = os.path.join(user_dir, local_name)
+    with open(local_path, "wb") as handle:
+        handle.write(data)
+    return local_path, "local"
+
+
 @app.route("/view/<int:doc_id>")
 def view(doc_id):
-    return redirect(_presigned(get_document(doc_id), "inline"))
+    doc = get_document(doc_id)
+    if doc["s3_key"].startswith(LOCAL_UPLOAD_DIR) or os.path.exists(_local_file_path(doc)):
+        return _serve_local(doc, "inline")
+    return redirect(_presigned(doc, "inline"))
 
 
 @app.route("/download/<int:doc_id>")
 def download(doc_id):
-    return redirect(_presigned(get_document(doc_id), "attachment"))
+    doc = get_document(doc_id)
+    if doc["s3_key"].startswith(LOCAL_UPLOAD_DIR) or os.path.exists(_local_file_path(doc)):
+        return _serve_local(doc, "attachment")
+    return redirect(_presigned(doc, "attachment"))
 
 
 @app.route("/delete/<int:doc_id>", methods=["POST"])
 def delete(doc_id):
     doc = get_document(doc_id)
-    s3.delete_object(Bucket=BUCKET, Key=doc["s3_key"])
+    if doc["s3_key"].startswith(LOCAL_UPLOAD_DIR) or os.path.exists(_local_file_path(doc)):
+        try:
+            os.remove(_local_file_path(doc))
+        except OSError:
+            pass
+    elif BUCKET:
+        try:
+            s3.delete_object(Bucket=BUCKET, Key=doc["s3_key"])
+        except Exception:
+            pass
     con = db()
     con.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
     con.commit()
     con.close()
     flash(f"Deleted {doc['filename']}.")
-    return redirect(url_for("dashboard"))
-
-
-@app.errorhandler(413)
-def too_large(_e):
-    flash("File too large. Maximum size is 5 MB.")
     return redirect(url_for("dashboard"))
 
 

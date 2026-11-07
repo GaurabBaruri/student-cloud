@@ -61,11 +61,11 @@ with mock_aws():
 
     r = c.post(
         "/upload",
-        data={"file": (io.BytesIO(b"%PDF" + b"0" * (6 * 1024 * 1024)), "big.pdf"), "_csrf": t},
+        data={"file": (io.BytesIO(b"%PDF" + b"0" * (7 * 1024 * 1024)), "big.pdf"), "_csrf": t},
         content_type="multipart/form-data",
         follow_redirects=True,
     )
-    ok("oversize rejected", "too large" in r.text)
+    ok("large upload accepted", "big.pdf" in r.text)
 
     ok("view -> presigned inline", "inline" in c.get("/view/1").headers["Location"])
     ok("download -> presigned attachment", "attachment" in c.get("/download/1").headers["Location"])
@@ -73,6 +73,8 @@ with mock_aws():
 
     r = c.post("/delete/1", data={"_csrf": t}, follow_redirects=True)
     ok("delete removes from list", "cert.pdf" not in r.text or "Deleted" in r.text)
+    r2 = c.post("/delete/2", data={"_csrf": t}, follow_redirects=True)
+    ok("delete removes large upload", "big.pdf" not in r2.text or "Deleted" in r2.text)
     ok("delete removes from S3", "Contents" not in s3.list_objects_v2(Bucket="test-bucket"))
 
 print("ALL TESTS PASSED")
