@@ -1,16 +1,17 @@
 """Cloud-Based Student Document Management System (Flask + Amazon S3 on EC2)."""
 import os
+import random
 import re
 import secrets
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 
 import boto3
 from flask import (Flask, abort, flash, redirect, render_template, request,
                    session, url_for)
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.utils import secure_filename
 
 app = Flask(__name__)
@@ -54,7 +55,10 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
+            password TEXT NOT NULL,
+            email TEXT UNIQUE,
+            phone TEXT UNIQUE,
+            password_set INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -65,10 +69,107 @@ def init_db():
             upload_date TEXT NOT NULL,
             FOREIGN KEY (user_id) REFERENCES users(id)
         );
+        CREATE TABLE IF NOT EXISTS otp_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            contact_type TEXT NOT NULL,
+            contact_value TEXT NOT NULL,
+            otp_code TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        );
         """
     )
     con.commit()
     con.close()
+
+
+def migrate_db():
+    con = db()
+    user_columns = [row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()]
+    for column_name, column_sql in {
+        "email": "TEXT UNIQUE",
+        "phone": "TEXT UNIQUE",
+        "password_set": "INTEGER NOT NULL DEFAULT 0",
+    }.items():
+        if column_name not in user_columns:
+            con.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_sql}")
+    otp_exists = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='otp_requests'"
+    ).fetchone()
+    if otp_exists is None:
+        con.execute(
+            """
+            CREATE TABLE otp_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                contact_type TEXT NOT NULL,
+                contact_value TEXT NOT NULL,
+                otp_code TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+            """
+        )
+    con.commit()
+    con.close()
+
+
+def normalize_email(value):
+    return value.strip().lower()
+
+
+def normalize_phone(value):
+    cleaned = re.sub(r"[^0-9+]", "", value.strip())
+    return cleaned
+
+
+def normalize_contact(contact_type, value):
+    if contact_type == "phone":
+        return normalize_phone(value)
+    return normalize_email(value)
+
+
+def get_user_by_identifier(identifier):
+    ident = (identifier or "").strip()
+    if not ident:
+        return None
+    con = db()
+    user = con.execute(
+        "SELECT * FROM users WHERE username = ? OR email = ? OR phone = ?",
+        (ident, normalize_email(ident), normalize_phone(ident) if re.search(r"\d", ident) else ident),
+    ).fetchone()
+    con.close()
+    return user
+
+
+def ensure_default_user():
+    default_username = os.environ.get("DEFAULT_USERNAME", "student")
+    default_password = os.environ.get("DEFAULT_PASSWORD", "student123")
+    default_email = os.environ.get("DEFAULT_EMAIL", "student@example.com")
+    default_phone = os.environ.get("DEFAULT_PHONE", "+1234567890")
+    con = db()
+    row = con.execute("SELECT id FROM users WHERE username = ?", (default_username,)).fetchone()
+    if row is None:
+        con.execute(
+            "INSERT INTO users (username, password, email, phone, password_set) VALUES (?, ?, ?, ?, 1)",
+            (default_username, generate_password_hash(default_password), default_email, default_phone),
+        )
+        con.commit()
+    else:
+        con.execute(
+            "UPDATE users SET password = ?, email = COALESCE(email, ?), phone = COALESCE(phone, ?), password_set = 1 WHERE username = ?",
+            (generate_password_hash(default_password), default_email, default_phone, default_username),
+        )
+        con.commit()
+    con.close()
+
+
+def send_otp(contact_type, contact_value, otp_code):
+    print(f"[OTP] {contact_type}: {contact_value} -> {otp_code}")
+    return True
 
 
 # ---------- helpers ----------
@@ -133,20 +234,146 @@ def index():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     if request.method == "POST":
-        username = request.form.get("username", "").strip()
+        identifier = (request.form.get("identifier") or request.form.get("username", "")).strip()
         password = request.form.get("password", "")
-        con = db()
-        user = con.execute(
-            "SELECT * FROM users WHERE username = ?", (username,)
-        ).fetchone()
-        con.close()
+        user = get_user_by_identifier(identifier)
         if user and check_password_hash(user["password"], password):
+            if user["password_set"] in (None, 0):
+                con = db()
+                con.execute("UPDATE users SET password_set = 1 WHERE id = ?", (user["id"],))
+                con.commit()
+                con.close()
             session.clear()
             session["user_id"] = user["id"]
             session["user"] = user["username"]
             return redirect(url_for("dashboard"))
-        flash("Invalid username or password.")
+        flash("Invalid username, email, phone, or password.")
     return render_template("login.html")
+
+
+@app.route("/request-otp", methods=["POST"])
+def request_otp():
+    username = request.form.get("username", "").strip()
+    contact_type = request.form.get("contact_type", "email")
+    contact_value = request.form.get("contact_value", "").strip()
+    if not username or not contact_value:
+        flash("Username and email/phone are required.")
+        return redirect(url_for("login"))
+    if contact_type not in {"email", "phone"}:
+        flash("Choose either email or phone for OTP.")
+        return redirect(url_for("login"))
+    normalized = normalize_contact(contact_type, contact_value)
+    if contact_type == "email" and not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", normalized):
+        flash("Enter a valid email address.")
+        return redirect(url_for("login"))
+    if contact_type == "phone" and not re.fullmatch(r"\+?[0-9]{7,15}", normalized):
+        flash("Enter a valid phone number.")
+        return redirect(url_for("login"))
+
+    con = db()
+    user = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    if user is None:
+        placeholder = generate_password_hash(secrets.token_hex(32))
+        con.execute(
+            "INSERT INTO users (username, password, email, phone, password_set) VALUES (?, ?, ?, ?, 0)",
+            (
+                username,
+                placeholder,
+                normalized if contact_type == "email" else None,
+                normalized if contact_type == "phone" else None,
+            ),
+        )
+        user = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    else:
+        if contact_type == "email":
+            existing_email = con.execute("SELECT id FROM users WHERE email = ? AND id != ?", (normalized, user["id"])).fetchone()
+            if existing_email:
+                flash("That email address is already in use.")
+                con.close()
+                return redirect(url_for("login"))
+            con.execute("UPDATE users SET email = ? WHERE id = ?", (normalized, user["id"]))
+        else:
+            existing_phone = con.execute("SELECT id FROM users WHERE phone = ? AND id != ?", (normalized, user["id"])).fetchone()
+            if existing_phone:
+                flash("That phone number is already in use.")
+                con.close()
+                return redirect(url_for("login"))
+            con.execute("UPDATE users SET phone = ? WHERE id = ?", (normalized, user["id"]))
+
+    otp_code = str(random.randint(100000, 999999))
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(minutes=10)).isoformat()
+    con.execute(
+        "INSERT INTO otp_requests (user_id, contact_type, contact_value, otp_code, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (user["id"], contact_type, normalized, otp_code, now.isoformat(), expires_at),
+    )
+    con.commit()
+    con.close()
+    send_otp(contact_type, normalized, otp_code)
+    session["otp_user_id"] = user["id"]
+    flash(f"OTP sent to your {contact_type}. Use it to set your password.")
+    return redirect(url_for("login"))
+
+
+@app.route("/set-password", methods=["POST"])
+def set_password():
+    username = request.form.get("username", "").strip()
+    contact_type = request.form.get("contact_type", "email")
+    contact_value = request.form.get("contact_value", "").strip()
+    otp_code = request.form.get("otp", "").strip()
+    new_password = request.form.get("password", "")
+    if not all([username, contact_value, otp_code, new_password]):
+        flash("Username, contact, OTP, and password are required.")
+        return redirect(url_for("login"))
+    normalized = normalize_contact(contact_type, contact_value)
+    con = db()
+    user = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+    if user is None:
+        con.close()
+        flash("Account not found. Create or request an OTP first.")
+        return redirect(url_for("login"))
+
+    if contact_type == "email" and user["email"] != normalized:
+        con.close()
+        flash("This email does not match the account.")
+        return redirect(url_for("login"))
+    if contact_type == "phone" and user["phone"] != normalized:
+        con.close()
+        flash("This phone number does not match the account.")
+        return redirect(url_for("login"))
+
+    otp_row = con.execute(
+        "SELECT * FROM otp_requests WHERE user_id = ? AND contact_type = ? AND contact_value = ? ORDER BY id DESC LIMIT 1",
+        (user["id"], contact_type, normalized),
+    ).fetchone()
+    if otp_row is None:
+        con.close()
+        flash("No OTP was found for this account.")
+        return redirect(url_for("login"))
+
+    expires_at = datetime.fromisoformat(otp_row["expires_at"])
+    if datetime.now(timezone.utc) > expires_at or otp_row["otp_code"] != otp_code:
+        con.close()
+        flash("Invalid or expired OTP code.")
+        return redirect(url_for("login"))
+
+    if len(new_password) < 6:
+        con.close()
+        flash("Password must be at least 6 characters long.")
+        return redirect(url_for("login"))
+
+    con.execute(
+        "UPDATE users SET password = ?, password_set = 1 WHERE id = ?",
+        (generate_password_hash(new_password), user["id"]),
+    )
+    con.execute("DELETE FROM otp_requests WHERE user_id = ?", (user["id"],))
+    con.commit()
+    con.close()
+    session.clear()
+    session["user_id"] = user["id"]
+    session["user"] = user["username"]
+    flash("Password set successfully. You are now logged in.")
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/logout")
@@ -252,6 +479,8 @@ def too_large(_e):
 
 
 init_db()
+migrate_db()
+ensure_default_user()
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
