@@ -87,14 +87,46 @@ def init_db():
 
 def migrate_db():
     con = db()
-    user_columns = [row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()]
-    for column_name, column_sql in {
-        "email": "TEXT UNIQUE",
-        "phone": "TEXT UNIQUE",
-        "password_set": "INTEGER NOT NULL DEFAULT 0",
-    }.items():
-        if column_name not in user_columns:
-            con.execute(f"ALTER TABLE users ADD COLUMN {column_name} {column_sql}")
+    user_table_exists = con.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='users'"
+    ).fetchone()
+    user_columns = [row[1] for row in con.execute("PRAGMA table_info(users)").fetchall()] if user_table_exists else []
+    required_columns = ["email", "phone", "password_set"]
+    missing_columns = [column for column in required_columns if column not in user_columns]
+
+    if user_table_exists and missing_columns:
+        con.execute("ALTER TABLE users RENAME TO users_old")
+        con.execute(
+            """
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL,
+                password TEXT NOT NULL,
+                email TEXT UNIQUE,
+                phone TEXT UNIQUE,
+                password_set INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+        select_columns = ["id", "username", "password"]
+        if "email" in user_columns:
+            select_columns.append("email")
+        else:
+            select_columns.append("NULL AS email")
+        if "phone" in user_columns:
+            select_columns.append("phone")
+        else:
+            select_columns.append("NULL AS phone")
+        if "password_set" in user_columns:
+            select_columns.append("password_set")
+        else:
+            select_columns.append("1 AS password_set")
+        con.execute(
+            f"INSERT INTO users (id, username, password, email, phone, password_set) "
+            f"SELECT {', '.join(select_columns)} FROM users_old"
+        )
+        con.execute("DROP TABLE users_old")
+
     otp_exists = con.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='otp_requests'"
     ).fetchone()
