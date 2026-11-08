@@ -1,5 +1,6 @@
 """Cloud-Based Student Document Management System (Flask + Amazon S3 on EC2)."""
 import os
+import mimetypes
 import re
 import secrets
 import sqlite3
@@ -121,10 +122,9 @@ def content_matches(ext, head):
 # ---------- routes ----------
 @app.route("/")
 def index():
-    return redirect(url_for("dashboard"))
+    return dashboard()
 
 
-@app.route("/dashboard")
 def dashboard():
     purge_missing_documents()
     con = db()
@@ -207,12 +207,14 @@ def upload():
 
 def _presigned(doc, disposition):
     safe = re.sub(r'[^A-Za-z0-9._-]', "_", doc["filename"])
+    content_type = mimetypes.guess_type(doc["filename"])[0] or "application/octet-stream"
     return s3.generate_presigned_url(
         "get_object",
         Params={
             "Bucket": BUCKET,
             "Key": doc["s3_key"],
             "ResponseContentDisposition": f'{disposition}; filename="{safe}"',
+            "ResponseContentType": content_type,
         },
         ExpiresIn=120,
     )
@@ -272,27 +274,18 @@ def purge_missing_documents():
 
 
 def _upload_to_storage(user_id, original, data, ext):
-    if BUCKET and REGION and os.environ.get("AWS_ACCESS_KEY_ID") and os.environ.get("AWS_SECRET_ACCESS_KEY"):
-        key = f"documents/{uuid.uuid4().hex}.{ext}"
-        try:
-            s3.put_object(
-                Bucket=BUCKET,
-                Key=key,
-                Body=data,
-                ContentType="application/octet-stream",
-                ServerSideEncryption="AES256",
-            )
-            return key, "s3"
-        except Exception as exc:
-            print(f"[S3 FALLBACK] {exc}")
+    if not BUCKET or not REGION:
+        raise RuntimeError("S3_BUCKET or AWS_REGION is missing.")
 
-    user_dir = os.path.join(LOCAL_UPLOAD_DIR, str(user_id))
-    os.makedirs(user_dir, exist_ok=True)
-    local_name = f"{uuid.uuid4().hex}.{ext}"
-    local_path = os.path.join(user_dir, local_name)
-    with open(local_path, "wb") as handle:
-        handle.write(data)
-    return local_path, "local"
+    key = f"documents/{uuid.uuid4().hex}.{ext}"
+    s3.put_object(
+        Bucket=BUCKET,
+        Key=key,
+        Body=data,
+        ContentType="application/octet-stream",
+        ServerSideEncryption="AES256",
+    )
+    return key, "s3"
 
 
 @app.route("/view/<int:doc_id>")
@@ -307,6 +300,20 @@ def view(doc_id):
         except FileNotFoundError:
             flash("The requested document was not found or is no longer available.")
             return redirect(url_for("dashboard"))
+    return redirect(_presigned(doc, "inline"))
+
+
+@app.route("/share/<int:doc_id>")
+def share(doc_id):
+    doc = get_document(doc_id)
+
+    if doc is None or _document_missing(doc):
+        flash("The requested document is unavailable.")
+        return redirect(url_for("dashboard"))
+
+    if _is_local_document(doc):
+        return _serve_local(doc, "inline")
+
     return redirect(_presigned(doc, "inline"))
 
 

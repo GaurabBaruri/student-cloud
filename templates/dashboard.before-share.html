@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Student Cloud</title>
+    <style>
+        :root {
+            --bg: #edf4ff;
+            --panel: #ffffff;
+            --panel-alt: #f8fbff;
+            --primary: #2563eb;
+            --primary-dark: #1d4ed8;
+            --secondary: #0f172a;
+            --muted: #64748b;
+            --line: #d9e4f2;
+            --success: #0f766e;
+            --danger: #dc2626;
+            --shadow: 0 18px 45px rgba(37, 99, 235, 0.12);
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            font-family: Arial, Helvetica, sans-serif;
+            background: linear-gradient(180deg, #eef5ff 0%, #f8fbff 100%);
+            color: var(--secondary);
+        }
+
+        .topbar {
+            position: sticky;
+            top: 0;
+            z-index: 10;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 32px;
+            background: rgba(255,255,255,0.82);
+            border-bottom: 1px solid rgba(148,163,184,0.2);
+            backdrop-filter: blur(8px);
+        }
+
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 1.35rem;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+        }
+
+        .brand-mark {
+            width: 42px;
+            height: 42px;
+            display: grid;
+            place-items: center;
+            border-radius: 14px;
+            background: linear-gradient(135deg, var(--primary), #60a5fa);
+            color: white;
+            box-shadow: var(--shadow);
+            font-weight: 700;
+        }
+
+        .topbar-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+
+        .btn {
+            border: none;
+            border-radius: 12px;
+            padding: 11px 18px;
+            cursor: pointer;
+            text-decoration: none;
+            font-weight: 600;
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn:hover { transform: translateY(-1px); }
+
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+            box-shadow: 0 10px 25px rgba(37, 99, 235, 0.22);
+        }
+
+        .btn-primary:hover { background: var(--primary-dark); }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: var(--secondary);
+        }
+
+        .container {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 32px 20px 56px;
+        }
+
+        .hero {
+            display: grid;
+            grid-template-columns: 1.5fr 0.9fr;
+            gap: 22px;
+            align-items: stretch;
+            margin-bottom: 26px;
+        }
+
+        .hero-card, .stats-card, .upload-card, .files-panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 24px;
+            box-shadow: var(--shadow);
+        }
+
+        .hero-card {
+            padding: 30px 28px;
+            background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+        }
+
+        .eyebrow {
+            display: inline-block;
+            background: rgba(37,99,235,0.08);
+            color: var(--primary);
+            border-radius: 999px;
+            padding: 8px 12px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 16px 0 10px;
+            font-size: clamp(2.2rem, 4vw, 3.4rem);
+            line-height: 1.1;
+            letter-spacing: -0.04em;
+        }
+
+        .hero-card p {
+            margin: 0;
+            color: var(--muted);
+            font-size: 1.05rem;
+            line-height: 1.7;
+            max-width: 42rem;
+        }
+
+        .stats-card {
+            padding: 24px 20px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 18px;
+            background: linear-gradient(180deg, #0f172a 0%, #1e293b 100%);
+            color: white;
+        }
+
+        .stat-item {
+            padding: 18px 20px;
+            border-radius: 18px;
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+        }
+
+        .stat-value {
+            display: block;
+            font-size: 2rem;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .stat-label {
+            color: rgba(255,255,255,0.75);
+            font-size: 0.9rem;
+        }
+
+        .upload-card {
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .upload-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+
+        .upload-header h2 {
+            margin: 0;
+            font-size: 1.3rem;
+        }
+
+        .upload-form {
+            display: grid;
+            grid-template-columns: minmax(240px, 1fr) auto;
+            gap: 16px;
+            align-items: center;
+        }
+
+        .file-input-wrap {
+            position: relative;
+            width: 100%;
+        }
+
+        .file-input-wrap input[type="file"] {
+            width: 100%;
+            padding: 16px 18px;
+            border: 1px solid var(--line);
+            border-radius: 14px;
+            background: var(--panel-alt);
+            color: var(--secondary);
+            font-size: 1rem;
+        }
+
+        .helper-text {
+            margin-top: 12px;
+            color: var(--muted);
+            font-size: 0.9rem;
+        }
+
+        .files-panel {
+            padding: 24px;
+        }
+
+        .files-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .files-header h2 {
+            margin: 0;
+            font-size: 1.3rem;
+        }
+
+        .file-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+            gap: 18px;
+        }
+
+        .file-card {
+            border: 1px solid var(--line);
+            border-radius: 18px;
+            background: linear-gradient(180deg, #fafcff 0%, #ffffff 100%);
+            overflow: hidden;
+        }
+
+        .file-icon {
+            display: grid;
+            place-items: center;
+            width: 52px;
+            height: 52px;
+            border-radius: 16px;
+            background: rgba(37,99,235,0.08);
+            color: var(--primary);
+            font-size: 1.5rem;
+            font-weight: 700;
+            margin: 18px 18px 8px;
+        }
+
+        .file-body {
+            padding: 0 18px 18px;
+        }
+
+        .file-name {
+            margin: 0 0 10px;
+            font-size: 1.05rem;
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .file-meta {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            color: var(--muted);
+            font-size: 0.82rem;
+            margin-bottom: 14px;
+        }
+
+        .file-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .mini-btn {
+            border-radius: 10px;
+            padding: 8px 12px;
+            text-decoration: none;
+            font-size: 0.82rem;
+            font-weight: 600;
+            border: 1px solid transparent;
+        }
+
+        .mini-btn.primary {
+            background: rgba(37,99,235,0.08);
+            color: var(--primary);
+        }
+
+        .mini-btn.success {
+            background: rgba(15,118,110,0.09);
+            color: var(--success);
+        }
+
+        .mini-btn.danger {
+            background: rgba(220,38,38,0.08);
+            color: var(--danger);
+        }
+
+        .empty-state {
+            border: 1px dashed var(--line);
+            border-radius: 18px;
+            background: var(--panel-alt);
+            padding: 44px 18px;
+            text-align: center;
+            color: var(--muted);
+        }
+
+        .alert {
+            background: rgba(37,99,235,0.08);
+            border: 1px solid rgba(37,99,235,0.12);
+            border-radius: 14px;
+            color: var(--secondary);
+            padding: 12px 14px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 760px) {
+            .hero {
+                grid-template-columns: 1fr;
+            }
+
+            .upload-form {
+                grid-template-columns: 1fr;
+            }
+
+            .topbar {
+                padding: 16px 18px;
+            }
+
+            .brand {
+                font-size: 1.1rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <nav class="topbar">
+        <div class="brand">
+            <span class="brand-mark">S</span>
+            <span>Student Cloud</span>
+        </div>
+        <div class="topbar-actions">
+            <a href="#upload" class="btn btn-primary">Upload File</a>
+            <a href="/dashboard" class="btn btn-secondary">Refresh</a>
+        </div>
+    </nav>
+
+    <div class="container">
+        {% for message in get_flashed_messages() %}
+        <div class="alert">{{ message }}</div>
+        {% endfor %}
+
+        <section class="hero">
+            <div class="hero-card">
+                <span class="eyebrow">Public access</span>
+                <h1>Smart storage for every student.</h1>
+                <p>Upload documents, images, and PDFs in seconds. Access them instantly for viewing, sharing, and downloading from anywhere.</p>
+            </div>
+            <div class="stats-card">
+                <div class="stat-item">
+                    <span class="stat-value">{{ files|length }}</span>
+                    <span class="stat-label">Files in library</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-value">24/7</span>
+                    <span class="stat-label">Available online</span>
+                </div>
+            </div>
+        </section>
+
+        <section class="upload-card" id="upload">
+            <div class="upload-header">
+                <h2>Upload a document</h2>
+            </div>
+            <form action="/upload" method="POST" enctype="multipart/form-data" class="upload-form">
+                <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                <div class="file-input-wrap">
+                    <input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg,.docx" multiple required>
+                </div>
+                <button type="submit" class="btn btn-primary">Upload to Cloud</button>
+            </form>
+            <div class="helper-text">Supported: PDF, PNG, JPG, JPEG and DOCX. Large uploads are enabled for student sharing.</div>
+        </section>
+
+        <section class="files-panel">
+            <div class="files-header">
+                <h2>Recent uploads</h2>
+            </div>
+
+            {% if files %}
+            <div class="file-grid">
+                {% for f in files %}
+                <article class="file-card">
+                    <div class="file-icon">{{ f.filename.rsplit('.', 1)[-1].upper() if '.' in f.filename else 'F' }}</div>
+                    <div class="file-body">
+                        <h3 class="file-name">{{ f.filename }}</h3>
+                        <div class="file-meta">
+                            <span>{{ f.size | filesize }}</span>
+                            <span>{{ f.upload_date }}</span>
+                        </div>
+                        <div class="file-actions">
+                            <a href="/view/{{ f.id }}" target="_blank" class="mini-btn primary">View</a>
+                            <a href="/download/{{ f.id }}" class="mini-btn success">Download</a>
+                            <form action="/delete/{{ f.id }}" method="POST" style="display:inline; margin:0;">
+                                <input type="hidden" name="_csrf" value="{{ csrf_token() }}">
+                                <button type="submit" class="mini-btn danger" onclick="return confirm('Delete this item?')">Delete</button>
+                            </form>
+                        </div>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+            {% else %}
+            <div class="empty-state">No files uploaded yet. Be the first student to share a document.</div>
+            {% endif %}
+        </section>
+    </div>
+</body>
+</html>
